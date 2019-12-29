@@ -1,5 +1,4 @@
 import numpy as np
-import pandas as pd
 
 """
 This module implements various techniques for estimation of the ATT, i.e.
@@ -22,10 +21,7 @@ def ipw(y: np.ndarray, t: np.ndarray, propensity: np.ndarray):
     ipw_weights = propensity / (1 - propensity)
     ipw_weights[idx_treat] = 1.
 
-    att = np.average(y[idx_treat], weights=propensity[idx_treat]) - \
-          np.average(y[~idx_treat], weights=propensity[~idx_treat])
+    att = np.average(y[idx_treat], weights=ipw_weights[idx_treat]) - \
+          np.average(y[~idx_treat], weights=ipw_weights[~idx_treat])
 
-    # att = np.sum(y[idx_treat]) / np.sum(propensity[idx_treat]) - \
-    #       np.sum(y[~idx_treat] * propensity[~idx_treat]) \
-    #       / np.sum(propensity[~idx_treat])
     return att
