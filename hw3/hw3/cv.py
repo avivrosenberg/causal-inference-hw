@@ -1,16 +1,13 @@
-import numpy as np
-import scipy.stats as stats
 from typing import NamedTuple
 
+import numpy as np
+import scipy.stats as stats
 from sklearn.base import BaseEstimator
-from sklearn.linear_model import Ridge, Lasso
-from sklearn.ensemble import GradientBoostingRegressor
-from sklearn.neural_network import MLPRegressor
-from sklearn.preprocessing import StandardScaler
-from sklearn.pipeline import make_pipeline, Pipeline
+from sklearn.metrics import r2_score, make_scorer
 from sklearn.model_selection import StratifiedShuffleSplit, StratifiedKFold, \
     RandomizedSearchCV
-from sklearn.metrics import r2_score, make_scorer
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 
 """
 This module implements cross-validation for fitting various types of models.
@@ -64,7 +61,7 @@ def slearner_features(X, t, interaction=True):
     are the interactions.
     """
     if isinstance(t, (int, float)):
-        t = np.array(t)
+        t = np.full(shape=(X.shape[0], 1), fill_value=t)
 
     t = t.reshape(-1, 1)
     if interaction:
