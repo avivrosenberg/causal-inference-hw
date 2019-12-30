@@ -19,7 +19,7 @@ def encode_categorical(df: pd.DataFrame):
     return df
 
 
-def get_training_data(df: pd.DataFrame, scale_covariates=True):
+def get_training_data(df: pd.DataFrame, scale_covariates=False):
     ncols = len(df.columns)
     n_covariates = ncols - 2  # T and Y
 

@@ -25,3 +25,7 @@ def ipw(y: np.ndarray, t: np.ndarray, propensity: np.ndarray):
           np.average(y[~idx_treat], weights=ipw_weights[~idx_treat])
 
     return att
+
+
+def s_learner(model, X, y, t, interaction=True, propensity=None):
+    pass
