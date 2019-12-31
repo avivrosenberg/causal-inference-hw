@@ -31,17 +31,23 @@ def ipw(y: np.ndarray, t: np.ndarray, propensity: np.ndarray):
     return att
 
 
-def slearner_features(X, t, interaction=True):
+def interaction_features(X, t, interaction=True):
     """
-    Creates input features for an s-learner model.
+    Creates interaction features for an s-learner model.
     @param X: Covariates. Shape should be (N, d)
     @param t: Treatment. Can be scalar, in which case same treatment will
     be used for all samples.
     @param interaction: Whether to create interaction features between X and t.
+    Can be True, False or None. If True, both X*t and t will be added as
+    covariates. If False, only t will be added. If None, nothing will be
+    added and X will be returned as-is.
     @return: Features matrix of shape (N, d+1) if interaction=False,
     or of shape (N, 2d+1) if interaction=True. The +1 is t and the extra d
     are the interactions.
     """
+    if interaction is None:
+        return X
+
     if isinstance(t, (int, float)):
         t = np.full(shape=(X.shape[0], 1), fill_value=t)
 
@@ -71,7 +77,7 @@ def fit_slearner_cv(cv_cfg: CVConfig, X: np.ndarray, y: np.ndarray,
         - Train-set R^2 score
         - Test-set R^2 score
     """
-    X = slearner_features(X, t, interaction)
+    X = interaction_features(X, t, interaction)
 
     scorer = make_scorer(r2_score, greater_is_better=True, needs_proba=False)
 
@@ -110,8 +116,8 @@ def s_learner(model: BaseEstimator, X: np.ndarray, y: np.ndarray,
 
     # Create interaction features if model was trained with interaction,
     # and set t to one or zero to generate the counterfactual outcome.
-    X1 = slearner_features(X, 1, interaction)
-    X0 = slearner_features(X, 0, interaction)
+    X1 = interaction_features(X, 1, interaction)
+    X0 = interaction_features(X, 0, interaction)
 
     yhat1 = model.predict(X1)
     yhat0 = model.predict(X0)
@@ -120,6 +126,50 @@ def s_learner(model: BaseEstimator, X: np.ndarray, y: np.ndarray,
 
     # If we got propensity scores, use doubly-robust estimator
     e = propensity[idx_treat]
+    return doubly_robust(yhat1, yhat0, t, y, e)
+
+
+def t_learner(treated_model: BaseEstimator,
+              control_model: BaseEstimator,
+              X: np.ndarray, y: np.ndarray,
+              t: np.ndarray, propensity: np.ndarray = None):
+    """
+    Estimates the ATT for a dataset using two trained models, in a T-learner
+    approach.
+    @param treated_model: The regression model trained on the treated group.
+    @param control_model: The regression model trained on the treated group.
+    @param X: The covariates shape (N, d)
+    @param y: The outcomes, shape (N,)
+    @param t: The treatment assignment, shape (N,)
+    @param propensity: Optional propensity scores for doubly-robust estimation.
+    @return: The estimated ATT.
+    """
+
+    assert X.shape[0] == y.shape[0]
+    assert y.shape == t.shape
+    if propensity is not None:
+        assert propensity.shape == y.shape
+
+    # Select only treatment group
+    idx_treat = t == 1
+    X, y, t = X[idx_treat], y[idx_treat], t[idx_treat]
+
+    # Predict factual outcomes
+    yhat1 = treated_model.predict(X)
+
+    # Predict counterfactual outcomes
+    yhat0 = control_model.predict(X)
+
+    if propensity is None:
+        return np.average(yhat1 - yhat0)
+
+    # If we got propensity scores, use doubly-robust estimator
+    e = propensity[idx_treat]
+    return doubly_robust(yhat1, yhat0, t, y, e)
+
+
+def doubly_robust(yhat1, yhat0, t, y, e):
+    assert yhat1.shape == yhat0.shape == t.shape == y.shape == e.shape
 
     # Formula based on https://www4.stat.ncsu.edu/~davidian/double.pdf
     return np.average(
