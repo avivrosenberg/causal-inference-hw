@@ -1,18 +1,27 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.calibration import CalibratedClassifierCV, calibration_curve
-from sklearn.ensemble import GradientBoostingClassifier
-from sklearn.linear_model import LogisticRegressionCV
-from sklearn.metrics import brier_score_loss, make_scorer, roc_auc_score
-from sklearn.model_selection import StratifiedKFold
+from sklearn.metrics import brier_score_loss, roc_auc_score
 
-SEED = 42
+from .cv import CVConfig, run_cv_config
 
 
-def calibrate_classifier(estimator, X, y, cv_splits=5, **plot_kw):
-    cv = StratifiedKFold(n_splits=cv_splits, shuffle=True, random_state=SEED)
-    train_idx, valid_idx = next(cv.split(X, y))
+def fit_propensity_cv(cv_cfg: CVConfig, X: np.ndarray, t: np.ndarray,
+                      plot_args=None, **cv_args):
+    scorer = None
+    cv_model, idx_train, idx_test = run_cv_config(
+        cv_cfg, X, t, stratify=True, scorer=scorer, **cv_args
+    )
 
+    plot_args = plot_args if plot_args else dict()
+    best_est, best_score = calibrate_classifier(
+        cv_model.best_estimator_, X, t, idx_calib=idx_test, **plot_args
+    )
+
+    return best_est, cv_model.best_params_
+
+
+def calibrate_classifier(estimator, X, y, idx_calib, **plot_kw):
     if plot_kw:
         ax = plot_kw.get('ax')
         if not ax:
@@ -27,22 +36,25 @@ def calibrate_classifier(estimator, X, y, cv_splits=5, **plot_kw):
     estimators = [
         (est_name, estimator),
         (est_name + ' isotonic',
-         CalibratedClassifierCV(estimator, cv=cv, method='isotonic')),
+         CalibratedClassifierCV(estimator, cv='prefit', method='isotonic')
+         .fit(X[idx_calib], y[idx_calib])
+         ),
         (est_name + ' platt',
-         CalibratedClassifierCV(estimator, cv=cv, method='sigmoid')),
+         CalibratedClassifierCV(estimator, cv='prefit', method='sigmoid')
+         .fit(X[idx_calib], y[idx_calib])
+         ),
     ]
 
     scores, aurocs = [], []
     for name, est in estimators:
-        est.fit(X[train_idx], y[train_idx])
-        proba = est.predict_proba(X[valid_idx])[:, 1]
-        scores.append(brier_score_loss(y[valid_idx], proba, pos_label=y.max()))
-        aurocs.append(roc_auc_score(y[valid_idx], proba))
+        proba = est.predict_proba(X)[:, 1]
+        scores.append(brier_score_loss(y, proba, pos_label=y.max()))
+        aurocs.append(roc_auc_score(y, proba))
 
         # Plot calibration curve
         if plot_kw:
             fraction_of_positives, mean_predicted_value = \
-                calibration_curve(y[valid_idx], proba, n_bins=15)
+                calibration_curve(y, proba, n_bins=15)
             ax.plot(mean_predicted_value, fraction_of_positives, "s-",
                     label=f"{name} (a={aurocs[-1]:.3f} b={scores[-1]:.3f})")
 
@@ -50,69 +62,44 @@ def calibrate_classifier(estimator, X, y, cv_splits=5, **plot_kw):
         ax.legend(loc='lower right')
         ax.grid(True)
 
-    best_est = estimators[np.argmax(scores)]
-    return best_est[1], np.max(scores)
+    best_est = estimators[np.argmax(scores)][1]
+    return best_est, np.max(scores)
 
 
-SUPPORTED_METHODS = {
-    'logistic': LogisticRegressionCV,
-    'gbm': GradientBoostingClassifier,
-}
-
-
-def estimate_propensity(X: np.ndarray, t: np.ndarray, method='logistic',
-                        plot_args=None, **est_kw):
-    if method not in SUPPORTED_METHODS:
-        raise ValueError(f"Unknown method {method}. Must be in "
-                         f"{SUPPORTED_METHODS.keys()}")
-
-    if method == 'logistic':
-        cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=SEED)
-        scorer = make_scorer(brier_score_loss, greater_is_better=False,
-                             needs_proba=True)
-        default_est_kw = dict(penalty='l1', Cs=20, solver='liblinear', cv=cv,
-                              scoring=scorer)
-    elif method == 'gbm':
-        default_est_kw = dict(learning_rate=0.01, max_depth=2)
-    else:
-        raise ValueError(f"Unknown method {method}")
-
-    # Merge est_kw with defaults so that est_kw has precedence
-    for k, v in default_est_kw.items():
-        est_kw.setdefault(k, v)
-
-    estimator = SUPPORTED_METHODS[method](**est_kw)
-
-    plot_args = plot_args if plot_args else dict()
-    calibrated_estimator, _ = calibrate_classifier(
-        estimator, X, t, **plot_args
-    )
-
-    propensity = calibrated_estimator.predict_proba(X)[:, 1]
-    return propensity
-
-
-def common_support(t: np.ndarray, propensity: np.ndarray):
+def common_support(t: np.ndarray, propensity: np.ndarray,
+                   min_thresh=1e-5, max_thresh=1-1e-5):
     """
+    Returns the common support between Treatment and Control groups in terms
+    of propensity score overlap.
+    Also allows rejecting samples with a propensity lower/higher than some
+    threshold.
 
-    @param t:
-    @param prop:
+    @param t: Treatment assignments (binary), shape (N,)
+    @param prop: Propensity scores, shape (N,)
+    @param min_thresh: Minimal propensity score to keep. Samples with a
+    lower score will be rejected. Zero has no effect.
+    @param max_thresh: Maximal propensity score to keep. Samples with a
+    higher score will be rejected. One has no effect.
     @return: Sample indices of the common support.
     """
     assert t.ndim == 1
     assert t.shape == propensity.shape
+    assert min_thresh >= 0
+    assert max_thresh <= 1
 
     idx_treat = t == 1
 
     # Lower-bound of common support: maximum between minimal propensity of
-    # each group
+    # each group and the minimal-value threshold
     lower_bound = max(np.min(propensity[idx_treat]),
-                      np.min(propensity[~idx_treat]))
+                      np.min(propensity[~idx_treat]),
+                      min_thresh)
 
     # Upper-bound of common support: minimum between maximal propensity of
-    # each group
+    # each group and the maximal-value threshold
     upper_bound = min(np.max(propensity[idx_treat]),
-                      np.max(propensity[~idx_treat]))
+                      np.max(propensity[~idx_treat]),
+                      max_thresh)
 
     # Return sample indices within the common support
     return (propensity >= lower_bound) & (propensity <= upper_bound)
