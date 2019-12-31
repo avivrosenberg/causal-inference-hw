@@ -70,10 +70,10 @@ def estimate_propensity(X: np.ndarray, t: np.ndarray, method='logistic',
         cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=SEED)
         scorer = make_scorer(brier_score_loss, greater_is_better=False,
                              needs_proba=True)
-        default_est_kw = dict(penalty='l1', Cs=10, solver='liblinear', cv=cv,
+        default_est_kw = dict(penalty='l1', Cs=20, solver='liblinear', cv=cv,
                               scoring=scorer)
     elif method == 'gbm':
-        default_est_kw = dict(learning_rate=0.001, max_depth=6)
+        default_est_kw = dict(learning_rate=0.01, max_depth=2)
     else:
         raise ValueError(f"Unknown method {method}")
 
@@ -90,3 +90,29 @@ def estimate_propensity(X: np.ndarray, t: np.ndarray, method='logistic',
 
     propensity = calibrated_estimator.predict_proba(X)[:, 1]
     return propensity
+
+
+def common_support(t: np.ndarray, propensity: np.ndarray):
+    """
+
+    @param t:
+    @param prop:
+    @return: Sample indices of the common support.
+    """
+    assert t.ndim == 1
+    assert t.shape == propensity.shape
+
+    idx_treat = t == 1
+
+    # Lower-bound of common support: maximum between minimal propensity of
+    # each group
+    lower_bound = max(np.min(propensity[idx_treat]),
+                      np.min(propensity[~idx_treat]))
+
+    # Upper-bound of common support: minimum between maximal propensity of
+    # each group
+    upper_bound = min(np.max(propensity[idx_treat]),
+                      np.max(propensity[~idx_treat]))
+
+    # Return sample indices within the common support
+    return (propensity >= lower_bound) & (propensity <= upper_bound)
