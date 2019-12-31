@@ -12,6 +12,11 @@ def load_data(path):
 
 
 def encode_categorical(df: pd.DataFrame):
+    """
+    Encodes the categorical features of a dataset as ordinal integers.
+    @param df: A Dataframe.
+    @return: A new dataframe, with the categorical features replaced.
+    """
     df = df.copy()
     ord_enc = OrdinalEncoder(categories='auto')
     cat_cols = list(df.columns[df.dtypes == 'category'])
@@ -20,12 +25,19 @@ def encode_categorical(df: pd.DataFrame):
 
 
 def get_training_data(df: pd.DataFrame, scale_covariates=False):
+    """
+    Extracts covariates X, outcome y and treatment assignment t from a dataset.
+    @param df: Dataframe containing a dataset.
+    @param scale_covariates: Whether to normalize each covariate to zero
+    mean and unit variance.
+    @return: X, y, t
+    """
     ncols = len(df.columns)
     n_covariates = ncols - 2  # T and Y
 
     X = df.iloc[:, :n_covariates].to_numpy()
-    t = df['T'].to_numpy()
     y = df['Y'].to_numpy()
+    t = df['T'].to_numpy()
 
     if scale_covariates:
         X = StandardScaler().fit_transform(X)
