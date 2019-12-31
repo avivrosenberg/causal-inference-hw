@@ -3,7 +3,6 @@ from typing import NamedTuple
 import numpy as np
 import scipy.stats as stats
 from sklearn.base import BaseEstimator
-from sklearn.metrics import r2_score, make_scorer
 from sklearn.model_selection import StratifiedShuffleSplit, StratifiedKFold, \
     RandomizedSearchCV, ShuffleSplit, KFold
 from sklearn.pipeline import Pipeline
@@ -52,59 +51,6 @@ class LogSpaceSampler:
         return 10 ** self.sampler.rvs(random_state=random_state)
 
 
-def slearner_features(X, t, interaction=True):
-    """
-    Creates input features for an s-learner model.
-    @param X: Covariates. Shape should be (N, d)
-    @param t: Treatment. Can be scalar, in which case same treatment will
-    be used for all samples.
-    @param interaction: Whether to create interaction features between X and t.
-    @return: Features matrix of shape (N, d+1) if interaction=False,
-    or of shape (N, 2d+1) if interaction=True. The +1 is t and the extra d
-    are the interactions.
-    """
-    if isinstance(t, (int, float)):
-        t = np.full(shape=(X.shape[0], 1), fill_value=t)
-
-    t = t.reshape(-1, 1)
-    if interaction:
-        X = np.hstack((X, X * t, t))
-    else:
-        X = np.hstack((X, t))
-
-    return X
-
-
-def fit_slearner_cv(cv_cfg: CVConfig, X: np.ndarray, y: np.ndarray,
-                    t: np.ndarray, interaction=False, **cv_args):
-    """
-    Fits an s-learner using randomized-search cross-validation with
-    stratification on the treatment assignment.
-    @param cv_cfg: CVConfig containing a model and a dict of parameters for
-    use with RandomizedSearchCV.
-    @param X: Covariates. Will be split into train/validation/test.
-    @param y: Outcomes.
-    @param t: Treatment assignment
-    @param interaction: Whether to create interaction features between
-    covariates and treatment.
-    @return: A tuple of:
-        - CV object containing best-fitted model, can be used for inference
-        - Train-set R^2 score
-        - Test-set R^2 score
-    """
-    X = slearner_features(X, t, interaction)
-
-    scorer = make_scorer(r2_score, greater_is_better=True, needs_proba=False)
-
-    rcv, idx_train, idx_test = run_cv_config(
-        cv_cfg, X, y, stratify=t, scorer=scorer, **cv_args
-    )
-
-    # Infer scores on best model
-    train_score = rcv.score(X[idx_train], y[idx_train])
-    test_score = rcv.score(X[idx_test], y[idx_test])
-
-    return rcv, train_score, test_score
 
 
 def run_cv_config(cv_config: CVConfig, X: np.ndarray, y: np.ndarray,
