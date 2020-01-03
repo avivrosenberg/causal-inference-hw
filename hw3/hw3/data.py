@@ -24,22 +24,29 @@ def encode_categorical(df: pd.DataFrame):
     return df
 
 
-def get_training_data(df: pd.DataFrame, scale_covariates=False):
+def get_training_data(df: pd.DataFrame, scale_covariates=False,
+                      col_t='T', col_y='Y', col_prop='propensity'):
     """
-    Extracts covariates X, outcome y and treatment assignment t from a dataset.
+    Extracts covariates X, outcome y, treatment assignment t and propensity
+    scores p from a dataset.
     @param df: Dataframe containing a dataset.
     @param scale_covariates: Whether to normalize each covariate to zero
     mean and unit variance.
-    @return: X, y, t
+    @param col_t: Name of treatment assignment column
+    @param col_y: Name of outcome column
+    @param col_prop: Name of propensity column
+    @return: Tuple (X, y, t, p). If any of y, t, p are not found, they will
+    be returned as None.
     """
-    ncols = len(df.columns)
-    n_covariates = ncols - 2  # T and Y
 
-    X = df.iloc[:, :n_covariates].to_numpy()
-    y = df['Y'].to_numpy()
-    t = df['T'].to_numpy()
+    cols = df.columns
+    cols_y_t_p = (col_y, col_t, col_prop)
+    cols_X = [col for col in cols if col not in cols_y_t_p]
+
+    X = df[cols_X].to_numpy()
+    y, t, p = tuple(df[col].to_numpy() if col else None for col in cols_y_t_p)
 
     if scale_covariates:
         X = StandardScaler().fit_transform(X)
 
-    return X, y, t
+    return X, y, t, p
