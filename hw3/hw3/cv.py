@@ -9,7 +9,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
 """
-This module implements cross-validation for fitting various types of models.
+This module implements cross-validation helpers based on the sklearn classes.
 """
 
 
