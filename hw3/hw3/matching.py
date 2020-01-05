@@ -1,10 +1,119 @@
 import math
 
 import numpy as np
+from scipy.stats import wasserstein_distance
 from sklearn.base import BaseEstimator
 from sklearn.metrics.pairwise import euclidean_distances
 from sklearn.neighbors import NearestNeighbors
 from sklearn.utils.validation import check_is_fitted
+
+
+def ssmd_dist(X1: np.ndarray, X2: np.ndarray):
+    """
+    SSMD distance metric between pairs of random variables.
+    https://en.wikipedia.org/wiki/Strictly_standardized_mean_difference
+    We assume each dataset has N samples from d random variables and we want
+    to compare variable j=[0,d-1] between the datasets.
+    To make this a distance, we return the absolute value of the SSMD for
+    each variable.
+
+    @param X1: Data from population 1 (e.g. treat), of shape (N1, d).
+    @param X2: Data from population 2 (e.g. control), of shape (N2, d).
+    @return: The SSMD distance (abs value) for each variable. Shape (d,).
+    """
+    assert X1.shape[1] == X2.shape[1]
+
+    # If number of samples is not equal, trim the longer one.
+    imax = min(X1.shape[0], X2.shape[0])
+    X1, X2 = X1[:imax], X2[:imax]
+
+    dX = X1 - X2
+    mu = np.mean(dX, axis=0, keepdims=False)
+    sigma2 = np.var(dX, axis=0, keepdims=False)
+
+    # Prevent division by zero
+    nonzero_var = sigma2 > 0
+    return np.abs(mu[nonzero_var] / np.sqrt(sigma2[nonzero_var]))
+
+
+def wass_dist(X1: np.ndarray, X2: np.ndarray):
+    """
+    Wasserstein distance metric between pairs of random variables.
+    https://en.wikipedia.org/wiki/Wasserstein_metric
+    We assume each dataset has N samples from d random variables and we want
+    to compare variable j=[0,d-1] between the datasets.
+
+    @param X1: Data from population 1 (e.g. treat), of shape (N1, d).
+    @param X2: Data from population 2 (e.g. control), of shape (N2, d).
+    @return: The SSMD distance (abs value) for each variable. Shape (d,).
+    """
+    assert X1.shape[1] == X2.shape[1]
+    d = X1.shape[1]
+
+    return np.array([
+        wasserstein_distance(X1[:, j], X2[:, j]) for j in range(d)
+    ])
+
+
+def propensity_matching(X: np.ndarray, t: np.ndarray, p: np.ndarray,
+                        tol=math.inf):
+    """
+    Matching based on propensity scores.
+    @param X: Covariates of shape (N, d).
+    @param t: Treament assignment values of shape (N,). We assume binary
+    treatment where t[i]=1 means treatment and t[i]=0 means control.
+    @param p: Propensity scores of shape (N,).
+    @param tol: Tolerance for matching as a fraction of the mean distance
+    between pairs with the closest propensity scores. E.g. if tol=0.9 then
+    only matching pairs for which the propensity distance is less than 90%
+    of the average distance among all pairs will be returned.
+    @return: Tuple of (X_ctrl_m, X_treat_m, dists) where these correspond to
+    the matched pairs of samples from the control and target groups
+    respectively and the differences between their propensity scores.
+    """
+    idx_treat = t == 1
+
+    matcher = MatchingEstimator(method='euclidean')
+    p_ctrl = p[~idx_treat].reshape(-1, 1)
+    p_treat = p[idx_treat].reshape(-1, 1)
+
+    _, _, idx_ctrl_m, idx_treat_m, dists = matcher.match(
+        Xref=p_ctrl, Xquery=p_treat, tol=tol
+    )
+
+    X_ctrl_m = X[~idx_treat][idx_ctrl_m]
+    X_treat_m = X[idx_treat][idx_treat_m]
+
+    return X_ctrl_m, X_treat_m, dists
+
+
+def covariate_matching(X: np.ndarray, t: np.ndarray, method, tol=math.inf):
+    """
+    Matching based on covariate values.
+    @param X: Covariates of shape (N, d).
+    @param t: Treament assignment values of shape (N,). We assume binary
+    treatment where t[i]=1 means treatment and t[i]=0 means control.
+    @param method: Method to use for calculating the distance metric.
+    Supported methods are listed in MatchingEstimator.METHODS.
+    @param tol: Tolerance for matching as a fraction of the mean distance
+    between pairs with the closest propensity scores. E.g. if tol=0.9 then
+    only matching pairs for which the propensity distance is less than 90%
+    of the average distance among all pairs will be returned.
+    @return: Tuple of (X_ctrl_m, X_treat_m, dists) where these correspond to
+    the matched pairs of samples from the control and target groups
+    respectively and the distances between their covaritates (calculated
+    according to the relevant metric for `method`).
+    """
+    idx_treat = t == 1
+    X_treat = X[idx_treat]
+    X_ctrl = X[~idx_treat]
+
+    matcher = MatchingEstimator(method=method)
+    X_ctrl_m, X_treat_m, _, _, dists = matcher.match(
+        Xref=X_ctrl, Xquery=X_treat, tol=tol
+    )
+
+    return X_ctrl_m, X_treat_m, dists
 
 
 class MatchingEstimator(BaseEstimator):
@@ -94,7 +203,8 @@ class MatchingEstimator(BaseEstimator):
         assert tol > 0
         self.fit(Xref)
 
-        # For random method, all ref samples will be matched
+        # For random method, all query samples will be matched to a random
+        # reference sample
         if self.method == 'random':
             Xref_m, Xref_m_idx = self.transform(Xquery)
             Xquery_m = Xquery
