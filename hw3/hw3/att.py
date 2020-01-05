@@ -176,3 +176,16 @@ def doubly_robust(yhat1, yhat0, t, y, e):
         t * y / e - (t - e) / e * yhat1
         - (1 - t) * y / (1 - e) - (t - e) / (1 - e) * yhat0
     )
+
+
+def matching(y, idx_treat_m, idx_ctrl_m):
+    """
+    Estimates the ATT for a dataset given matched samples.
+    @param y: Outcome values, of shape (N,).
+    @param idx_treat_m: Indices of matched samples that belong to the
+    treatment group, of shape (M,) where M <= N.
+    @param idx_ctrl_m: Indices of matched samples that belong to the
+    control group, of shape (M,) where M <= N.
+    @return: The estimated ATT.
+    """
+    return np.mean(y[idx_treat_m] - y[idx_ctrl_m])

@@ -71,20 +71,24 @@ def propensity_matching(X: np.ndarray, t: np.ndarray, p: np.ndarray,
     the matched pairs of samples from the control and target groups
     respectively and the differences between their propensity scores.
     """
-    idx_treat = t == 1
+    # Create numeric (non boolean) indices
+    idx = np.arange(X.shape[0])
+    idx_treat, idx_ctrl = idx[t == 1], idx[t == 0]
+    p_treat, p_ctrl = p[idx_treat].reshape(-1, 1), p[idx_ctrl].reshape(-1, 1)
 
     matcher = MatchingEstimator(method='euclidean')
-    p_ctrl = p[~idx_treat].reshape(-1, 1)
-    p_treat = p[idx_treat].reshape(-1, 1)
-
     _, _, idx_ctrl_m, idx_treat_m, dists = matcher.match(
         Xref=p_ctrl, Xquery=p_treat, tol=tol
     )
 
-    X_ctrl_m = X[~idx_treat][idx_ctrl_m]
+    # Get the matching sample's covariates
+    X_ctrl_m = X[idx_ctrl][idx_ctrl_m]
     X_treat_m = X[idx_treat][idx_treat_m]
 
-    return X_ctrl_m, X_treat_m, dists
+    # Convert indices to be relative the entire dataset, not the groups
+    idx_ctrl_m, idx_treat_m = idx_ctrl[idx_ctrl_m], idx_treat[idx_treat_m]
+
+    return X_ctrl_m, X_treat_m, idx_ctrl_m, idx_treat_m, dists
 
 
 def covariate_matching(X: np.ndarray, t: np.ndarray, method, tol=math.inf):
@@ -104,16 +108,20 @@ def covariate_matching(X: np.ndarray, t: np.ndarray, method, tol=math.inf):
     respectively and the distances between their covaritates (calculated
     according to the relevant metric for `method`).
     """
-    idx_treat = t == 1
-    X_treat = X[idx_treat]
-    X_ctrl = X[~idx_treat]
+    # Create numeric (non boolean) indices
+    idx = np.arange(X.shape[0])
+    idx_treat, idx_ctrl = idx[t == 1], idx[t == 0]
+    X_treat, X_ctrl = X[idx_treat], X[idx_ctrl]
 
     matcher = MatchingEstimator(method=method)
-    X_ctrl_m, X_treat_m, _, _, dists = matcher.match(
+    X_ctrl_m, X_treat_m, idx_ctrl_m, idx_treat_m, dists = matcher.match(
         Xref=X_ctrl, Xquery=X_treat, tol=tol
     )
 
-    return X_ctrl_m, X_treat_m, dists
+    # Convert indices to be relative the entire dataset, not the groups
+    idx_ctrl_m, idx_treat_m = idx_ctrl[idx_ctrl_m], idx_treat[idx_treat_m]
+
+    return X_ctrl_m, X_treat_m, idx_ctrl_m, idx_treat_m, dists
 
 
 class MatchingEstimator(BaseEstimator):
