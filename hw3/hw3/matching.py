@@ -3,7 +3,7 @@ import math
 import numpy as np
 from scipy.stats import wasserstein_distance
 from sklearn.base import BaseEstimator
-from sklearn.metrics.pairwise import euclidean_distances
+from sklearn.metrics.pairwise import paired_euclidean_distances as d_l2
 from sklearn.neighbors import NearestNeighbors
 from sklearn.utils.validation import check_is_fitted
 
@@ -165,7 +165,7 @@ class MatchingEstimator(BaseEstimator):
         """
         check_is_fitted(self, ['fitted_X_'])
 
-        _, idx = self.kneighbors(X, n_neighbors=1)
+        _, idx = self.kneighbors(X, k=1)
         idx = idx[:, 0]
 
         return self.fitted_X_[idx], idx
@@ -180,16 +180,25 @@ class MatchingEstimator(BaseEstimator):
         dists, _ = self.kneighbors(X)
         return 1 / np.mean(dists)
 
-    def kneighbors(self, X, n_neighbors=1):
-
+    def kneighbors(self, X, k=1):
+        """
+        Returns k closest neighbors to X in the reference (fitted) data and
+        their indices in the reference data.
+        @param X: Query data of shape (N, d).
+        @param k: Number of neightbors to fetch.
+        @return: Tuple (dists, idx) where both are shape (N, k).
+        """
         if self.method == 'random':
             idx = np.arange(self.fitted_X_.shape[0])
-            idx_matches = np.random.choice(idx, size=X.shape[0], replace=True)
-            dists = euclidean_distances(X, self.fitted_X_[idx_matches])
-            return dists, idx_matches.reshape(-1, 1)
+            idx_m = np.random.choice(idx, size=(X.shape[0], k), replace=True)
+            dists = np.hstack([
+                d_l2(X, self.fitted_X_[idx_m[:, j]]).reshape(-1, 1)
+                for j in range(k)
+            ])
 
-        return self.knn_.kneighbors(X, n_neighbors=n_neighbors,
-                                    return_distance=True)
+            return dists, idx_m
+
+        return self.knn_.kneighbors(X, k, return_distance=True)
 
     def match(self, Xref, Xquery, tol=math.inf):
         """
@@ -211,21 +220,15 @@ class MatchingEstimator(BaseEstimator):
         assert tol > 0
         self.fit(Xref)
 
-        # For random method, all query samples will be matched to a random
-        # reference sample
-        if self.method == 'random':
-            Xref_m, Xref_m_idx = self.transform(Xquery)
-            Xquery_m = Xquery
-            Xquery_m_idx = np.arange(Xquery.shape[0])
-            dists = euclidean_distances(Xref_m, Xquery_m)
-            return Xref_m, Xquery_m, Xref_m_idx, Xquery_m_idx, dists
-
-        dist, idx = self.kneighbors(Xquery)  # (Nquery, 1) indices into Xref
+        dist, idx = self.kneighbors(Xquery, k=1)  # (Nquery, k)
         dist = dist[:, 0]
         idx = idx[:, 0]
 
-        max_dist = np.mean(dist) * tol
-        valid_dist_idx = dist < max_dist
+        if self.method == 'random':
+            valid_dist_idx = np.ones_like(dist, dtype=np.bool)
+        else:
+            max_dist = np.mean(dist) * tol
+            valid_dist_idx = dist < max_dist
 
         Xref_m_idx = idx[valid_dist_idx]  # (M, 1) queries with a valid match
         Xref_m = Xref[Xref_m_idx]
