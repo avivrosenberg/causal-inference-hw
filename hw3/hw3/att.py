@@ -1,6 +1,8 @@
 import numpy as np
 from sklearn.base import BaseEstimator
 from sklearn.metrics import r2_score, make_scorer
+from sklearn.model_selection import StratifiedShuffleSplit
+from sklearn.tree import DecisionTreeRegressor
 
 from .cv import CVConfig, run_cv_config
 
@@ -189,3 +191,55 @@ def matching(y, idx_treat_m, idx_ctrl_m):
     @return: The estimated ATT.
     """
     return np.mean(y[idx_treat_m] - y[idx_ctrl_m])
+
+
+def causal_forest(X: np.ndarray, t: np.ndarray, cate: np.ndarray,
+                  n_trees=100, test_size=0.5, random_state=None,
+                  **tree_kwargs):
+    """
+    Estimates the ATT from a dataset using a causal forest approach.
+    Requires that the user first estimate the conditional average treatment
+    effect (CATE) per sample, e.g. using a T-Learner, matching or any other
+    approach.
+
+    This implementation is Based loosely on:
+    Wager, S., & Athey, S. (2017). Estimation and inference of heterogeneous
+    treatment effects using random forests.
+    Journal of the American Statistical Association.
+    https://doi.org/10.1080/01621459.2017.1319839
+
+    @param X: Covariates. Shape should be (N, d).
+    @param t: The treatment assignment, shape (N,). Assumed to be binary.
+    @param cate: Estimated treatment effect per sample, shape (N,).
+    @param n_trees: Number of decision trees in the forest.
+    @param test_size: Proportion of dataset to use for estimating the ATT.
+    A different split will be generated for each tree using the same
+    proportion.
+    @param random_state: Seed for randomization.
+    @param tree_kwargs: Use this to pass in extra arguments to the Decision
+    Tree model. See the documentation of DecisionTreeRegressor.
+    @return: The estimated ATT.
+    """
+
+    if not random_state:
+        random_state = np.random.randint(0, 2 ** 30)
+
+    splitter = StratifiedShuffleSplit(n_splits=n_trees,
+                                      test_size=test_size,
+                                      random_state=random_state)
+
+    att_splits = []
+    for idx_train, idx_test in splitter.split(X, t):
+        tree = DecisionTreeRegressor(
+            random_state=random_state, **tree_kwargs
+        )
+        tree.fit(X[idx_train], cate[idx_train])
+
+        X_test_treated = X[idx_test][t[idx_test] == 1]
+        att_splits.append(np.mean(
+            tree.predict(X_test_treated)
+        ))
+
+        random_state += 1
+
+    return np.mean(att_splits)
