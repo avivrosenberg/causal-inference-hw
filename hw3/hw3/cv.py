@@ -111,7 +111,7 @@ def run_cv_config(cv_config: CVConfig, X: np.ndarray, y: np.ndarray,
 
     # Run the cross-validation
     rcv = RandomizedSearchCV(pipeline, rcv_params, n_iter=n_iter, n_jobs=-1,
-                             cv=cv, scoring=scorer, iid=False, refit=True,
+                             cv=cv, scoring=scorer, refit=True,
                              random_state=random_state)
     rcv.fit(X[idx_train], y[idx_train])
     return rcv, idx_train, idx_test
