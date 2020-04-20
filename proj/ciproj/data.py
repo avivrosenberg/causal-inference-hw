@@ -112,7 +112,8 @@ def mark_dataset(
     treatment = [treatment]
 
     # Remove ignored columns
-    df = df.drop(columns=ignore, inplace=False)
+    if ignore:
+        df = df.drop(columns=ignore, inplace=False)
 
     # Rename columns
     df_T = df[treatment]
