@@ -85,9 +85,10 @@ def castrr_load_metadata(db_dir: str) -> pd.DataFrame:
                 continue
             meta[rec_name] = m.groupdict()
 
-    df_meta = pd.DataFrame(meta).transpose().sort_index(axis=0)
+    df_meta: pd.DataFrame = pd.DataFrame(meta).transpose().sort_index(axis=0)
     df_meta.index.name = 'rec'
     df_meta.columns = [c.upper() for c in df_meta.columns]
+    df_meta = df_meta.astype({'AGE': np.int32, 'SEX': 'category'})
     return df_meta
 
 
@@ -128,7 +129,8 @@ def castrr_common_index(
             [transform_idx(i) for i in df.index], names=idx_names
         )
         idx_all.update(new_idx.values)
-        df = pd.DataFrame(df.values, index=new_idx, columns=df.columns)
+        df = df.copy()
+        df.index = new_idx
         dfs[name] = df
 
     # Find index tuples that exist both in control and treated
@@ -226,7 +228,7 @@ def castrr_ci_dataset(
     ids_treated = sorted(set(patient_ids).difference(ids_control))
 
     # For our control group, we'll only use the control data as is.
-    df_control = dfs['control'].loc[ids_control]
+    df_control: pd.DataFrame = dfs['control'].loc[ids_control]
 
     # Add counterfactual outcome from their post-treatment records
     df_control_cf = dfs['treated'].loc[ids_control][outcomes]
@@ -238,16 +240,16 @@ def castrr_ci_dataset(
     # data.
     df_treated_covariates = dfs['control'].loc[ids_treated][covariates]
     df_treated_outcomes = dfs['treated'].loc[ids_treated][outcomes]
-    df_treated = df_treated_covariates.join(df_treated_outcomes, how='left')
-
+    df_treated: pd.DataFrame = df_treated_covariates.join(df_treated_outcomes,
+                                                          how='left')
     # Add counterfactual outcome from the pre-treatment records
     df_treated_cf = dfs['control'].loc[ids_treated][outcomes]
     if include_counterfactuals:
         df_treated = df_treated.join(df_treated_cf, how='left', rsuffix='_CF')
 
     # Assign treatment variable
-    df_control = df_control.assign(T=0)
-    df_treated = df_treated.assign(T=1)
+    df_control = df_control.assign(T=np.int32(0))
+    df_treated = df_treated.assign(T=np.int32(1))
 
     df = df_control.append(df_treated)
     return df
