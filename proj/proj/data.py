@@ -92,7 +92,113 @@ def castrr_load_metadata(db_dir: str) -> pd.DataFrame:
     return df_meta
 
 
-def castrr_common_index(
+def castrr_ci_dataset(
+        df_control: pd.DataFrame, df_treated: pd.DataFrame,
+        psd_type: str = 'AR', outcome_mse=True, outcome_dfa=True,
+        ignore_features=(), include_counterfactuals=False,
+        random_seed=None,
+) -> pd.DataFrame:
+    """
+    Creates a causal inference dataset from a set for control and treated
+    features from the mhrv analysis of the CASTRR data.
+
+    To create a causal inference dataset, we'll create our own control
+    and treatment groups by randomly assigning each subject for either group.
+    For subjects assigned to our control group, we take their data as is.
+    For subjects assigned to
+    the treatment group, we take the pre-treatment HRV features as
+    covariates and the post-treatment computed outcomes as outcome variables.
+
+    @param df_control: DataFrame with control data.
+    @param df_treated: DataFrame with post-treatment data.
+    @param psd_type: Type of PSD estimate to take from dataset,
+    which contains multiple estimates as e.g. "VLF_POWER_AR". The
+    selected variables will be renamed to e.g. "VLF_POWER".
+    @param outcome_mse: Whether to generate MSE-based outcome variables.
+    @param outcome_dfa: Whether to generate DFA-based outcome variables
+    @param ignore_features: List of features to drop.
+    @param include_counterfactuals: Whether to include counterfactual
+    outcome columns in the output. Due to the nature of the CAST RR dataset,
+    we can do this. For our control group, the counterfatual outcomes will
+    come from the CASTRR treated records of the corresponding patient,
+    and for our treated group they'll come from the CASTRR control records.
+    @param random_seed: Random seed for splitting patients into our own
+    control and treated groups.
+    @return: Single dataframe with consolidated PSD features, marked
+    covariate and output features ("X_" and "Y_") prefix, a treatment
+    column 'T' denoting our control/treated split. The index of the
+    dataframe will be (rec, win) where rec is the patient id (without suffix
+    'a'/'b').
+    """
+    psd_suffix = f'_{psd_type.upper()}'
+
+    # First, take only matching rows from control and treated, by moving
+    # them to a common index
+    df_control, df_treated = _castrr_common_index(df_control, df_treated)
+
+    # Extract patient ids. The common index is ('rec', 'win') where rec
+    # is e.g. 'e001'. Take level 0 of index ('rec').
+    patient_ids = list(df_control.index.levels[0])
+
+    dfs = {'control': df_control, 'treated': df_treated}
+
+    covariates, outcomes = [], []
+
+    for name, df in dfs.items():
+        # Compute the outcome
+        df, outcome_cols = _create_outcome_columns(
+            df, outcome_mse, outcome_dfa, prefix=''
+        )
+
+        # Treat PSD columns: Keep only the requested type,
+        # remove the other type and rename the columns
+        df = _consolidate_psd(df, psd_suffix)
+
+        # Mark the columns with prefixes and reorder dataframe
+        df, covariates, outcomes = _mark_dataset(
+            df, outcome_cols, ignore=ignore_features,
+            covariates_prefix='X_', outcomes_prefix='Y_'
+        )
+
+        dfs[name] = df
+
+    # Create our own control and treated patient groups
+    if random_seed is not None:
+        np.random.seed(random_seed)
+    ids_control = sorted(
+        np.random.choice(patient_ids, len(patient_ids) // 2, replace=False)
+    )
+    ids_treated = sorted(set(patient_ids).difference(ids_control))
+
+    # For our control group, we'll only use the control data as is
+    df_control: pd.DataFrame = dfs['control'].loc[ids_control]
+
+    # Add counterfactual outcome from their post-treatment records
+    df_control_cf = dfs['treated'].loc[ids_control][outcomes]
+    if include_counterfactuals:
+        df_control = df_control.join(df_control_cf, how='left', rsuffix='_CF')
+
+    # For our treatment group, we need to take their covariates
+    # from the pre-treatment data and their outcome from the post-treatment
+    # data.
+    df_treated_covariates = dfs['control'].loc[ids_treated][covariates]
+    df_treated_outcomes = dfs['treated'].loc[ids_treated][outcomes]
+    df_treated: pd.DataFrame = df_treated_covariates.join(df_treated_outcomes,
+                                                          how='left')
+    # Add counterfactual outcome from the pre-treatment records
+    df_treated_cf = dfs['control'].loc[ids_treated][outcomes]
+    if include_counterfactuals:
+        df_treated = df_treated.join(df_treated_cf, how='left', rsuffix='_CF')
+
+    # Assign treatment variable
+    df_control = df_control.assign(T=np.int32(0))
+    df_treated = df_treated.assign(T=np.int32(1))
+
+    df = df_control.append(df_treated)
+    return df
+
+
+def _castrr_common_index(
         df_control: pd.DataFrame, df_treated: pd.DataFrame
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
@@ -149,113 +255,7 @@ def castrr_common_index(
     return dfs['control'], dfs['treated']
 
 
-def castrr_ci_dataset(
-        df_control: pd.DataFrame, df_treated: pd.DataFrame,
-        psd_type: str = 'AR', outcome_mse=True, outcome_dfa=True,
-        ignore_features=(), include_counterfactuals=False,
-        random_seed=None,
-) -> pd.DataFrame:
-    """
-    Creates a causal inference dataset from a set for control and treated
-    features from the mhrv analysis of the CASTRR data.
-
-    To create a causal inference dataset, we'll create our own control
-    and treatment groups by randomly assigning each subject for either group.
-    For subjects assigned to our control group, we take their data as is.
-    For subjects assigned to
-    the treatment group, we take the pre-treatment HRV features as
-    covariates and the post-treatment computed outcomes as outcome variables.
-
-    @param df_control: DataFrame with control data.
-    @param df_treated: DataFrame with post-treatment data.
-    @param psd_type: Type of PSD estimate to take from dataset,
-    which contains multiple estimates as e.g. "VLF_POWER_AR". The
-    selected variables will be renamed to e.g. "VLF_POWER".
-    @param outcome_mse: Whether to generate MSE-based outcome variables.
-    @param outcome_dfa: Whether to generate DFA-based outcome variables
-    @param ignore_features: List of features to drop.
-    @param include_counterfactuals: Whether to include counterfactual
-    outcome columns in the output. Due to the nature of the CAST RR dataset,
-    we can do this. For our control group, the counterfatual outcomes will
-    come from the CASTRR treated records of the corresponding patient,
-    and for our treated group they'll come from the CASTRR control records.
-    @param random_seed: Random seed for splitting patients into our own
-    control and treated groups.
-    @return: Single dataframe with consolidated PSD features, marked
-    covariate and output features ("X_" and "Y_") prefix, a treatment
-    column 'T' denoting our control/treated split. The index of the
-    dataframe will be (rec, win) where rec is the patient id (without suffix
-    'a'/'b').
-    """
-    psd_suffix = f'_{psd_type.upper()}'
-
-    # First, take only matching rows from control and treated, by moving
-    # them to a common index
-    df_control, df_treated = castrr_common_index(df_control, df_treated)
-
-    # Extract patient ids. The common index is ('rec', 'win') where rec
-    # is e.g. 'e001'. Take level 0 of index ('rec').
-    patient_ids = list(df_control.index.levels[0])
-
-    dfs = {'control': df_control, 'treated': df_treated}
-
-    covariates, outcomes = [], []
-
-    for name, df in dfs.items():
-        # Compute the outcome.
-        df, outcome_cols = create_outcome_columns(
-            df, outcome_mse, outcome_dfa, prefix=''
-        )
-
-        # Treat PSD columns: Keep only the requested type,
-        # remove the other type and rename the columns.
-        df = consolidate_psd(df, psd_suffix)
-
-        # Mark the columns with prefixes and reorder dataframe
-        df, covariates, outcomes = mark_dataset(
-            df, outcome_cols, ignore=ignore_features,
-            covariates_prefix='X_', outcomes_prefix='Y_'
-        )
-
-        dfs[name] = df
-
-    # Create our own control and treated patient groups
-    if random_seed is not None:
-        np.random.seed(random_seed)
-    ids_control = sorted(
-        np.random.choice(patient_ids, len(patient_ids) // 2, replace=False)
-    )
-    ids_treated = sorted(set(patient_ids).difference(ids_control))
-
-    # For our control group, we'll only use the control data as is.
-    df_control: pd.DataFrame = dfs['control'].loc[ids_control]
-
-    # Add counterfactual outcome from their post-treatment records
-    df_control_cf = dfs['treated'].loc[ids_control][outcomes]
-    if include_counterfactuals:
-        df_control = df_control.join(df_control_cf, how='left', rsuffix='_CF')
-
-    # For our treatment group, we need to take their covariates
-    # from the pre-treatment data and their outcome from the post-treatment
-    # data.
-    df_treated_covariates = dfs['control'].loc[ids_treated][covariates]
-    df_treated_outcomes = dfs['treated'].loc[ids_treated][outcomes]
-    df_treated: pd.DataFrame = df_treated_covariates.join(df_treated_outcomes,
-                                                          how='left')
-    # Add counterfactual outcome from the pre-treatment records
-    df_treated_cf = dfs['control'].loc[ids_treated][outcomes]
-    if include_counterfactuals:
-        df_treated = df_treated.join(df_treated_cf, how='left', rsuffix='_CF')
-
-    # Assign treatment variable
-    df_control = df_control.assign(T=np.int32(0))
-    df_treated = df_treated.assign(T=np.int32(1))
-
-    df = df_control.append(df_treated)
-    return df
-
-
-def create_outcome_columns(df: pd.DataFrame, mse=True, dfa=True, prefix="Y_"):
+def _create_outcome_columns(df: pd.DataFrame, mse=True, dfa=True, prefix="Y_"):
     """
     Creates outcome columns based on Multiscale Entropy (MSE) and Detrended
     Fluctuation Analysis (DFA) features, and drops these columns from the
@@ -289,7 +289,7 @@ def create_outcome_columns(df: pd.DataFrame, mse=True, dfa=True, prefix="Y_"):
     return df, outcome_columns
 
 
-def mark_dataset(
+def _mark_dataset(
         df: pd.DataFrame,
         outcomes: List[str],
         ignore=(),
@@ -332,7 +332,7 @@ def mark_dataset(
     )
 
 
-def consolidate_psd(df: pd.DataFrame, psd_suffix):
+def _consolidate_psd(df: pd.DataFrame, psd_suffix):
     """
     Keep only one type of PSD features.
     @param df: A dataframe from mhrv output.
