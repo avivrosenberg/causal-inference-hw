@@ -1,4 +1,5 @@
 import re
+import sys
 from pathlib import Path
 from typing import Dict, Tuple, List
 
@@ -81,7 +82,7 @@ def castrr_load_metadata(db_dir: str) -> pd.DataFrame:
             m = CASTRR_METADATA_PATTERN.match(f.read())
             if not m:
                 print(f'WARNING: header does not match expected format in '
-                      f'file {header_path}')
+                      f'file {header_path}', file=sys.stderr)
                 continue
             meta[rec_name] = m.groupdict()
 
@@ -145,14 +146,14 @@ def castrr_ci_dataset(
     covariates, outcomes = [], []
 
     for name, df in dfs.items():
+        # Treat PSD columns: Keep only the requested type,
+        # remove the other type and rename the columns
+        df = _consolidate_psd(df, psd_suffix)
+
         # Compute the outcome
         df, outcome_cols = _create_outcome_columns(
             df, outcome_mse, outcome_dfa, prefix=''
         )
-
-        # Treat PSD columns: Keep only the requested type,
-        # remove the other type and rename the columns
-        df = _consolidate_psd(df, psd_suffix)
 
         # Mark the columns with prefixes and reorder dataframe
         df, covariates, outcomes = _mark_dataset(
@@ -216,7 +217,7 @@ def _castrr_common_index(
         except Exception as e:
             win = 1
             print(f"WARNING: Can't convert window to int rec={rec}, win={win}:"
-                  f" {e}")
+                  f" {e}", file=sys.stderr)
         return rec[:-1], win
 
     idx_all = set()
@@ -255,7 +256,10 @@ def _castrr_common_index(
     return dfs['control'], dfs['treated']
 
 
-def _create_outcome_columns(df: pd.DataFrame, mse=True, dfa=True, prefix="Y_"):
+def _create_outcome_columns(
+        df: pd.DataFrame, mse=True, dfa=True, beta=True,
+        prefix="Y_", drop_features=True,
+) -> Tuple[pd.DataFrame, List[str]]:
     """
     Creates outcome columns based on Multiscale Entropy (MSE) and Detrended
     Fluctuation Analysis (DFA) features, and drops these columns from the
@@ -265,25 +269,48 @@ def _create_outcome_columns(df: pd.DataFrame, mse=True, dfa=True, prefix="Y_"):
     feature columns.
     @param dfa: Whether to create DFA outcome column and drop the DFA
     feature column.
+    @param prefix: Prefix to prepend to new columns.
     @return: A tuple (df, outcome_colums) where df is a new dataframe with the
     added columns and outcome_colums is a list containing their names.
-    @param prefix: Prefix to prepend to new columns.
     """
 
     assert mse or dfa
     outcome_columns = []
-    feature_prefixes = {}
-    if mse:
-        feature_prefixes['MSE'] = 'mse'
-    if dfa:
-        feature_prefixes['DFA'] = 'alpha'
+    outcomes = {}
+    re_flags = re.IGNORECASE
 
-    for outcome_name, feature_prefix in feature_prefixes.items():
-        cols = [c for c in df.columns if c.lower().startswith(feature_prefix)]
-        mean = df[cols].mean(axis=1)
+    def fn_mean(df_cols: pd.DataFrame):
+        return df_cols.mean(axis=1)
+
+    def fn_neg_mean(df_cols: pd.DataFrame):
+        return - df_cols.mean(axis=1)
+
+    if mse:
+        outcomes['MSE_LO'] = (re.compile(r'^MSE\d$', re_flags),
+                              fn_mean)
+        outcomes['MSE_HI'] = (re.compile(r'^MSE[1-9][0-9]$', re_flags),
+                              fn_mean)
+    if dfa:
+        outcomes['ALPHA1'] = (re.compile(r'^alpha1$', re_flags),
+                              fn_mean)
+        outcomes['ALPHA2'] = (re.compile(r'^alpha2$', re_flags),
+                              fn_mean)
+    if beta:
+        outcomes['BETA'] = (re.compile(r'^BETA$', re_flags),
+                            fn_neg_mean)
+
+    for outcome_name, (column_pattern, outcome_fn) in outcomes.items():
+        cols = [c for c in df.columns if column_pattern.match(c)]
+        assert len(cols) > 0
+
+        outcome_value = outcome_fn(df[cols])
+
         outcome_column = f'{prefix}{outcome_name}'
-        df = df.assign(**{outcome_column: mean})
-        df = df.drop(columns=cols)
+        df = df.assign(**{outcome_column: outcome_value})
+
+        if drop_features and outcome_column not in cols:
+            df = df.drop(columns=cols)
+
         outcome_columns.append(outcome_column)
 
     return df, outcome_columns
