@@ -4,7 +4,7 @@ from typing import Dict, Tuple, List
 
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, OrdinalEncoder
 
 CASTRR_METADATA_PATTERN = \
     re.compile(r'^.*<age-range>: (?P<age>\d+).*<sex>: (?P<sex>\w+).*$',
@@ -377,15 +377,22 @@ def split_dataset(
     @param treatment: Name of treatment variable.
     @param scale_covariates: Whether to scale the covariates using a
     standard scaler.
-    @return: Tuple (X, y, y) containing the covariates, outcomes and
-    treatment respectively.
+    @return: Tuple (X, y, y) containing numpy arrays with the covariates,
+    outcomes and treatment respectively.
     """
+    df = df.copy()
+
+    # Handle categorical data by converting categories to integers
+    ord_enc = OrdinalEncoder(categories='auto')
+    cat_cols = list(df.columns[df.dtypes == 'category'])
+    df[cat_cols] = ord_enc.fit_transform(df[cat_cols])
+
     covariates = [c for c in df.columns if c.startswith(covariates_prefix)]
     outcomes = [c for c in df.columns if c.startswith(outcomes_prefix)]
 
-    X = df[covariates].values
-    y = df[outcomes].values
-    t = df[treatment].values.reshape(-1)
+    X = df[covariates].values.astype(np.float32)
+    y = df[outcomes].values.astype(np.float32)
+    t = df[treatment].values.reshape(-1).astype(np.int32)
 
     if y.shape[1] == 1:
         y = y.reshape(-1)
