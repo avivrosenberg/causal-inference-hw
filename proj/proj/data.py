@@ -95,7 +95,8 @@ def castrr_load_metadata(db_dir: str) -> pd.DataFrame:
 
 def castrr_ci_dataset(
         df_control: pd.DataFrame, df_treated: pd.DataFrame,
-        psd_type: str = 'AR', outcome_mse=True, outcome_dfa=True,
+        psd_type: str = 'AR',
+        outcome_mse=True, outcome_dfa=True, outcome_beta=True,
         ignore_features=(), include_counterfactuals=False,
         random_seed=None,
 ) -> pd.DataFrame:
@@ -152,7 +153,7 @@ def castrr_ci_dataset(
 
         # Compute the outcome
         df, outcome_cols = _create_outcome_columns(
-            df, outcome_mse, outcome_dfa, prefix=''
+            df, outcome_mse, outcome_dfa, outcome_beta, prefix=''
         )
 
         # Mark the columns with prefixes and reorder dataframe
