@@ -51,8 +51,6 @@ class LogSpaceSampler:
         return 10 ** self.sampler.rvs(random_state=random_state)
 
 
-
-
 def run_cv_config(cv_config: CVConfig, X: np.ndarray, y: np.ndarray,
                   stratify=None, test_size=0.2, cv_splits=4, scorer=None,
                   n_iter=100, random_state=None):
@@ -82,7 +80,7 @@ def run_cv_config(cv_config: CVConfig, X: np.ndarray, y: np.ndarray,
     if stratify is not None:
         # Assuming stratify is either True or an ndarray
         y_split = y if stratify is True else stratify
-        assert y_split.shape == y.shape
+        assert y_split.shape[0] == y.shape[0]
         tt_splitter = StratifiedShuffleSplit(test_size=test_size,
                                              random_state=random_state)
         cv_splitter = StratifiedKFold(n_splits=cv_splits, shuffle=True,
