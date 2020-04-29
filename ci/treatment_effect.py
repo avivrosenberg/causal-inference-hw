@@ -319,19 +319,27 @@ def causal_forest(X: ndarray, t: ndarray, cate: ndarray,
                                       test_size=test_size,
                                       random_state=random_state)
 
-    att_splits = []
+    ate_splits = []
     for idx_train, idx_test in splitter.split(X, t):
+
+        # Fit tree on current train-split
         tree = DecisionTreeRegressor(
             random_state=random_state, **tree_kwargs
         )
         tree.fit(X[idx_train], cate[idx_train])
 
+        # Estimate on test-split, but for ATT only consider treated samples
         X_test = X[idx_test]
         if att:
-            X_test = X_test[t[idx_test] == 1]
+            idx_treated = t[idx_test] == 1
+            X_test = X_test[idx_treated]
 
-        att_splits.append(np.mean(tree.predict(X_test)))
+        # Calculate ATE in this split
+        yhat = tree.predict(X_test)
+        ate = np.mean(yhat, axis=0)
+        ate_splits.append(ate)
 
         random_state += 1
 
-    return np.mean(att_splits)
+    ate_splits = np.vstack(ate_splits)
+    return np.mean(ate_splits, axis=0)
