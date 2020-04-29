@@ -135,14 +135,12 @@ def t_learner(treated_model: BaseEstimator,
         idx_selected = np.full_like(t, fill_value=True, dtype=np.bool)
     X, y, t = X[idx_selected], y[idx_selected], t[idx_selected]
 
-    # Predict factual outcomes
+    # Predict outcomes
     yhat1 = treated_model.predict(X)
-
-    # Predict counterfactual outcomes
     yhat0 = control_model.predict(X)
 
     if not transductive:
-        # Inductive: use factual outcomes
+        # Inductive: use factual outcomes where available
         idx_treated = t == 1
         yhat1[idx_treated] = y[idx_treated]
         yhat0[~idx_treated] = y[~idx_treated]
@@ -159,16 +157,34 @@ def doubly_robust(
         yhat1: ndarray, yhat0: ndarray, t: ndarray, y: ndarray,
         p: ndarray
 ) -> ndarray:
+    r"""
+    ATE/ATT estimation using the "doubly-robust" estimation based on
+    propensity scores.
+
+    This method takes the estimation error $\hat{y}_i - y_i$
+    into account and weighs it according to the inverse propensity.
+    It was shown to produce unbiased estimations of the treatment effect even
+    if only one of the models (propensity or outcome regressor) is unbiased.
+
+    Based on: Lunceford, J.K. and Davidian, M.(2004)
+    See also: https://www4.stat.ncsu.edu/~davidian/double.pdf
+
+    @param yhat1: Estimated potential outcomes for treated, (N,d).
+    @param yhat0: Estimated potential outcomes for control, (N,d)
+    @param t: Treatment assignment (N,)
+    @param y: Factual outcome (N, d)
+    @param p: Propensity scores (N,)
+    @return: ATE estimate based on doubly-robust estimator.
+    """
     assert yhat1.shape == yhat0.shape == y.shape
     assert y.shape[0] == t.shape[0] == p.shape[0]
 
     # For multioutcome, use same t and p for all outcomes. Reshape so
-    # broadcasting works.
+    # broadcasting works as we want.
     if y.ndim > 1:
         t = t.reshape(-1, 1)
         p = p.reshape(-1, 1)
 
-    # Formula based on https://www4.stat.ncsu.edu/~davidian/double.pdf
     return np.average(
         t * y / p - (t - p) / p * yhat1
         - (1 - t) * y / (1 - p) - (t - p) / (1 - p) * yhat0,
