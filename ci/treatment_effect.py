@@ -3,8 +3,10 @@ from numpy import ndarray
 from sklearn.base import BaseEstimator
 from sklearn.model_selection import StratifiedShuffleSplit
 from sklearn.tree import DecisionTreeRegressor
+from functools import partial
 
 from .models import interaction_features
+from .matching import covariate_matching, propensity_matching
 
 """
 This module implements various techniques for estimation of the causal 
@@ -56,7 +58,7 @@ def s_learner(model: BaseEstimator, X: ndarray, y: ndarray,
     Estimates the ATE or ATT for a dataset using a trained S-Learner model.
     @param model: The regression model to use for estimation.
     @param X: The covariates shape (N, d)
-    @param y: The outcomes, shape (N,)
+    @param y: The outcomes, shape (N,l)
     @param t: The treatment assignment, shape (N,)
     @param propensity: Optional propensity scores for doubly-robust estimation.
     @param interaction: Whether to use interaction features. Must be set
@@ -112,7 +114,7 @@ def t_learner(treated_model: BaseEstimator,
     @param treated_model: The regression model trained on the treated group.
     @param control_model: The regression model trained on the treated group.
     @param X: The covariates shape (N, d)
-    @param y: The outcomes, shape (N,)
+    @param y: The outcomes, shape (N, l)
     @param t: The treatment assignment, shape (N,)
     @param propensity: Optional propensity scores for doubly-robust estimation.
     @param att: Whether to calculate ATT instead of ATE.
@@ -185,24 +187,100 @@ def doubly_robust(
         t = t.reshape(-1, 1)
         p = p.reshape(-1, 1)
 
-    return np.average(
+    return np.nanmean(
         t * y / p - (t - p) / p * yhat1
         - (1 - t) * y / (1 - p) - (t - p) / (1 - p) * yhat0,
         axis=0
     )
 
 
-def matching(y, idx_treat_m, idx_ctrl_m):
+def matching(X: ndarray, y: ndarray, t: ndarray, propensity: ndarray = None,
+             method='cosine', k=1, tol=np.inf, att=False):
     """
-    Estimates the ATT for a dataset given matched samples.
-    @param y: Outcome values, of shape (N,).
-    @param idx_treat_m: Indices of matched samples that belong to the
-    treatment group, of shape (M,) where M <= N.
-    @param idx_ctrl_m: Indices of matched samples that belong to the
-    control group, of shape (M,) where M <= N.
-    @return: The estimated ATT.
+    Estimates the ATE/ATT for a dataset using a sample-matching approach.
+
+    @param X: The covariates, shape (N, d)
+    @param y: The outcomes, shape (N, l)
+    @param t: The treatment assignment, shape (N,)
+    @param propensity: Optional propensity scores for doubly-robust estimation.
+    @param method: See methods of the MatchingEstimator
+    @param k: Number of counterfactual neighbors to find and average over.
+    @param tol: Tolerance for matching as a fraction of the mean distance
+    between pairs with the closest propensity scores. E.g. if tol=0.9 then
+    only matching pairs for which the propensity distance is less than 90%
+    of the average distance among all pairs will be returned.
+    @param att: Whether to calculate ATT instead of ATE.
+    @return: Treatment effect, shape (l,)
     """
-    return np.mean(y[idx_treat_m] - y[idx_ctrl_m])
+
+    assert X.shape[0] == y.shape[0]
+    assert y.shape[0] == t.shape[0]
+    if y.ndim == 1:
+        y = y.reshape(-1, 1)
+
+    if propensity is not None:
+        assert propensity.shape[0] == y.shape[0]
+
+    idx = np.arange(X.shape[0])
+    idx_control, idx_treated = idx[t == 0], idx[t == 1]
+
+    if method.lower() == 'propensity':
+        assert propensity is not None
+        match_fn = partial(propensity_matching, X=X, t=t, p=propensity,
+                           k=k, tol=tol)
+    else:
+        match_fn = partial(covariate_matching, X=X, t=t, k=k,
+                           method=method, tol=tol)
+
+    yhat1, yhat0 = np.copy(y), np.copy(y)
+    yhat1[idx_control, :] = np.nan  # yhat1[i] = outcome of sample i with t==1
+    yhat0[idx_treated, :] = np.nan  # yhat0[i] = outcome of sample i with t==0
+
+    # Find k-NN matches for treated group in the control group
+    _, _, idx_ref_ctrl, idx_query_treated, dists_ref_control = \
+        match_fn(match_to=0)
+
+    # Calculate counterfactual outcomes for the control group using
+    # weighted-average of matches from treatment group
+    # Need a loop because number of matches might not be the same for each
+    # query due to the tolerance parameter.
+    for j in idx_treated:
+        match_idx = idx_query_treated == j
+        d_j = dists_ref_control[match_idx]
+        if np.sum(d_j) < 1e-9:
+            continue
+        y_j = y[idx_ref_ctrl[match_idx]]
+        y_j_mean = np.average(y_j, axis=0, weights=d_j)
+        yhat0[j, :] = y_j_mean
+
+    # For ATT, only use treatment group
+    if att:
+        yhat1, yhat0 = yhat1[idx_treated], yhat0[idx_treated]
+        if propensity is not None:
+            y, t, p = y[idx_treated], t[idx_treated], propensity[idx_treated]
+            return doubly_robust(yhat1, yhat0, t, y, p)
+        else:
+            return np.nanmean(yhat1 - yhat0, axis=0)
+
+    # Find k-NN matches for control group in the treated group
+    _, _, idx_ref_treated, idx_query_control, dists_ref_treated = \
+        match_fn(match_to=1)
+
+    # Calculate counterfactual outcomes for the treated group using
+    # weighted-average of matches from the control group
+    for j in idx_control:
+        match_idx = idx_query_control == j
+        d_j = dists_ref_treated[match_idx]
+        if np.sum(d_j) < 1e-9:
+            continue
+        y_j = y[idx_ref_treated[match_idx]]
+        y_j_mean = np.average(y_j, axis=0, weights=d_j)
+        yhat1[j, :] = y_j_mean
+
+    if propensity is not None:
+        return doubly_robust(yhat1, yhat0, t, y, propensity)
+    else:
+        return np.nanmean(yhat1 - yhat0, axis=0)
 
 
 def causal_forest(X: ndarray, t: ndarray, cate: ndarray,

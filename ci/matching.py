@@ -45,7 +45,7 @@ def wass_dist(X1: np.ndarray, X2: np.ndarray):
 
     @param X1: Data from population 1 (e.g. treat), of shape (N1, d).
     @param X2: Data from population 2 (e.g. control), of shape (N2, d).
-    @return: The SSMD distance (abs value) for each variable. Shape (d,).
+    @return: The Wasserstein distance (abs value) for each variable, (d,).
     """
     assert X1.shape[1] == X2.shape[1]
     d = X1.shape[1]
@@ -56,72 +56,83 @@ def wass_dist(X1: np.ndarray, X2: np.ndarray):
 
 
 def propensity_matching(X: np.ndarray, t: np.ndarray, p: np.ndarray,
-                        tol=math.inf):
+                        match_to=0, k=1, tol=math.inf):
     """
     Matching based on propensity scores.
     @param X: Covariates of shape (N, d).
-    @param t: Treament assignment values of shape (N,). We assume binary
+    @param t: Treatment assignment values of shape (N,). We assume binary
     treatment where t[i]=1 means treatment and t[i]=0 means control.
     @param p: Propensity scores of shape (N,).
+    @param match_to: Whether to match to the control group (t=0) or to the
+    treatment group (t=1). The group with t==match_to is the "reference"
+    @param k: Maximal number of nearest neighbors from the reference to return
+    per sample from the query group.
     @param tol: Tolerance for matching as a fraction of the mean distance
     between pairs with the closest propensity scores. E.g. if tol=0.9 then
     only matching pairs for which the propensity distance is less than 90%
     of the average distance among all pairs will be returned.
-    @return: Tuple of (X_ctrl_m, X_treat_m, dists) where these correspond to
-    the matched pairs of samples from the control and target groups
-    respectively and the differences between their propensity scores.
+    @return: Tuple of (X_ref_m, X_query_m, idx_ref_m, idx_query_m, dists)
+    where these correspond to
+    the matched pairs of samples from the reference and query groups groups
+    respectively, their respective indices, and the distances between their
+    covariates (calculated according to the relevant metric for `method`).
     """
-    # Create numeric (non boolean) indices
-    idx = np.arange(X.shape[0])
-    idx_treat, idx_ctrl = idx[t == 1], idx[t == 0]
-    p_treat, p_ctrl = p[idx_treat].reshape(-1, 1), p[idx_ctrl].reshape(-1, 1)
-
-    matcher = MatchingEstimator(method='euclidean')
-    _, _, idx_ctrl_m, idx_treat_m, dists = matcher.match(
-        Xref=p_ctrl, Xquery=p_treat, tol=tol
+    # We'll use propensity as 1d-covariates for matching with euclidean
+    # distance (just a difference in the 1d case).
+    p = p.reshape(-1, 1)
+    _, _, idx_ref_m, idx_query_m, dists = covariate_matching(
+        X=p, t=t, method='euclidean', match_to=match_to, k=k, tol=tol
     )
 
     # Get the matching sample's covariates
-    X_ctrl_m = X[idx_ctrl][idx_ctrl_m]
-    X_treat_m = X[idx_treat][idx_treat_m]
+    X_ref_m = X[idx_ref_m]
+    X_query_m = X[idx_query_m]
 
-    # Convert indices to be relative the entire dataset, not the groups
-    idx_ctrl_m, idx_treat_m = idx_ctrl[idx_ctrl_m], idx_treat[idx_treat_m]
-
-    return X_ctrl_m, X_treat_m, idx_ctrl_m, idx_treat_m, dists
+    return X_ref_m, X_query_m, idx_ref_m, idx_query_m, dists
 
 
-def covariate_matching(X: np.ndarray, t: np.ndarray, method, tol=math.inf):
+def covariate_matching(X: np.ndarray, t: np.ndarray, method,
+                       match_to=0, k=1, tol=math.inf):
     """
-    Matching based on covariate values.
+    k-NN Matching based on covariate values.
     @param X: Covariates of shape (N, d).
-    @param t: Treament assignment values of shape (N,). We assume binary
+    @param t: Treatment assignment values of shape (N,). We assume binary
     treatment where t[i]=1 means treatment and t[i]=0 means control.
     @param method: Method to use for calculating the distance metric.
     Supported methods are listed in MatchingEstimator.METHODS.
+    @param match_to: Whether to match to the control group (t=0) or to the
+    treatment group (t=1). The group with t==match_to is the "reference"
+    group and the other group (t==(1-match_to)) is the "query" group.
+    @param k: Maximal number of nearest neighbors from the reference to return
+    per sample from the query group.
     @param tol: Tolerance for matching as a fraction of the mean distance
     between pairs with the closest propensity scores. E.g. if tol=0.9 then
     only matching pairs for which the propensity distance is less than 90%
     of the average distance among all pairs will be returned.
-    @return: Tuple of (X_ctrl_m, X_treat_m, dists) where these correspond to
-    the matched pairs of samples from the control and target groups
-    respectively and the distances between their covaritates (calculated
-    according to the relevant metric for `method`).
+    @return: Tuple of (X_ref_m, X_query_m, idx_ref_m, idx_query_m, dists)
+    where these correspond to
+    the matched pairs of samples from the reference and query groups groups
+    respectively, their respective indices, and the distances between their
+    covariates (calculated according to the relevant metric for `method`).
     """
-    # Create numeric (non boolean) indices
-    idx = np.arange(X.shape[0])
-    idx_treat, idx_ctrl = idx[t == 1], idx[t == 0]
-    X_treat, X_ctrl = X[idx_treat], X[idx_ctrl]
+    # Assume binary treatment of t=0 or t=1
+    assert match_to == 0 or match_to == 1
 
-    matcher = MatchingEstimator(method=method)
-    X_ctrl_m, X_treat_m, idx_ctrl_m, idx_treat_m, dists = matcher.match(
-        Xref=X_ctrl, Xquery=X_treat, tol=tol
+    # Create numeric (non boolean) indices
+    # Query = what we match, Ref = what we match it to
+    idx = np.arange(X.shape[0])
+    idx_query, idx_ref = idx[t == (1 - match_to)], idx[t == match_to]
+    X_query, X_ref = X[idx_query], X[idx_ref]
+
+    matcher = MatchingEstimator(method=method, k=k)
+    X_ref_m, X_query_m, idx_ref_m, idx_query_m, dists = matcher.match(
+        Xref=X_ref, Xquery=X_query, tol=tol
     )
 
     # Convert indices to be relative the entire dataset, not the groups
-    idx_ctrl_m, idx_treat_m = idx_ctrl[idx_ctrl_m], idx_treat[idx_treat_m]
+    idx_ref_m, idx_query_m = idx_ref[idx_ref_m], idx_query[idx_query_m]
 
-    return X_ctrl_m, X_treat_m, idx_ctrl_m, idx_treat_m, dists
+    return X_ref_m, X_query_m, idx_ref_m, idx_query_m, dists
 
 
 class MatchingEstimator(BaseEstimator):
@@ -131,8 +142,11 @@ class MatchingEstimator(BaseEstimator):
     """
     METHODS = {'mahalanobis', 'euclidean', 'cosine', 'random'}
 
-    def __init__(self, method='cosine'):
+    def __init__(self, method='cosine', k=1):
+        assert method in self.METHODS
+        assert k > 0
         self.method = method
+        self.k = k
 
     def fit(self, X, y=None):
         """
@@ -148,7 +162,7 @@ class MatchingEstimator(BaseEstimator):
             metric['metric_params'] = dict(VI=np.linalg.inv(C))
 
         if self.method != 'random':
-            self.knn_ = NearestNeighbors(n_neighbors=1, **metric)
+            self.knn_ = NearestNeighbors(**metric)
             self.knn_.fit(X)
 
         self.fitted_X_ = X
@@ -156,17 +170,16 @@ class MatchingEstimator(BaseEstimator):
 
     def transform(self, X):
         """
-        Finds and returns the closest sample from the fitted data to the
+        Finds and returns the k-nearest samples from the fitted data to the
         given query data.
         @param X: The query data, shape (N, d).
-        @return: (Xref_matched, idx) Closest samples from the reference
-        (fitted data) of shape (N, d) and the indices in the reference data
+        @return: (Xref_matched, idx) k-Closest samples from the reference
+        (fitted data) of shape (N, k, d) and the indices in the reference data
         they correspond to.
         """
         check_is_fitted(self, ['fitted_X_'])
 
-        _, idx = self.kneighbors(X, k=1)
-        idx = idx[:, 0]
+        _, idx = self.kneighbors(X)
 
         return self.fitted_X_[idx], idx
 
@@ -180,7 +193,7 @@ class MatchingEstimator(BaseEstimator):
         dists, _ = self.kneighbors(X)
         return 1 / np.mean(dists)
 
-    def kneighbors(self, X, k=1):
+    def kneighbors(self, X):
         """
         Returns k closest neighbors to X in the reference (fitted) data and
         their indices in the reference data.
@@ -188,6 +201,7 @@ class MatchingEstimator(BaseEstimator):
         @param k: Number of neightbors to fetch.
         @return: Tuple (dists, idx) where both are shape (N, k).
         """
+        k = self.k
         if self.method == 'random':
             idx = np.arange(self.fitted_X_.shape[0])
             idx_m = np.random.choice(idx, size=(X.shape[0], k), replace=True)
@@ -220,9 +234,7 @@ class MatchingEstimator(BaseEstimator):
         assert tol > 0
         self.fit(Xref)
 
-        dist, idx = self.kneighbors(Xquery, k=1)  # (Nquery, k)
-        dist = dist[:, 0]
-        idx = idx[:, 0]
+        dist, idx = self.kneighbors(Xquery)  # (Nquery, k)
 
         if self.method == 'random':
             valid_dist_idx = np.ones_like(dist, dtype=np.bool)
@@ -233,7 +245,9 @@ class MatchingEstimator(BaseEstimator):
         Xref_m_idx = idx[valid_dist_idx]  # (M, 1) queries with a valid match
         Xref_m = Xref[Xref_m_idx]
 
-        Xquery_m_idx = np.arange(Xquery.shape[0])[valid_dist_idx]
+        Xquery_m_idx = np.arange(Xquery.shape[0]).reshape(-1, 1)  # (N,1)
+        Xquery_m_idx = np.repeat(Xquery_m_idx, self.k, axis=1)  # (N,k)
+        Xquery_m_idx = Xquery_m_idx[valid_dist_idx]
         Xquery_m = Xquery[Xquery_m_idx]
 
         return Xref_m, Xquery_m, Xref_m_idx, Xquery_m_idx, dist[valid_dist_idx]
